@@ -4,6 +4,7 @@ Keybase Chat Downloader
 
 An interactive tool for downloading complete chat histories with attachments from Keybase.
 Images are automatically converted to optimized WebP format.
+Videos are re-encoded to efficient H.265/HEVC format.
 """
 
 import json
@@ -27,6 +28,10 @@ console = Console()
 # Image extensions that should be converted to WebP
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif"}
 WEBP_QUALITY = 80  # Quality setting for WebP compression (0-100)
+
+# Video extensions that should be re-encoded
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".wmv", ".flv"}
+VIDEO_CRF = 28  # Constant Rate Factor for H.265 (18-28 is good, higher = smaller file)
 
 
 class KeybaseChat:
@@ -166,6 +171,56 @@ def convert_to_webp(input_path: Path, quality: int = WEBP_QUALITY) -> Path | Non
         else:
             return None
     except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def compress_video(input_path: Path, crf: int = VIDEO_CRF) -> Path | None:
+    """
+    Re-encode a video to H.265/HEVC format using ffmpeg for better compression.
+    Returns the new path if successful, None if conversion failed or not a video.
+    """
+    if input_path.suffix.lower() not in VIDEO_EXTENSIONS:
+        return None
+
+    output_path = input_path.with_suffix(".mp4")
+    temp_output = input_path.with_suffix(".h265.mp4")
+
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-i", str(input_path),
+                "-c:v", "libx265",
+                "-crf", str(crf),
+                "-preset", "medium",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-movflags", "+faststart",
+                "-y",
+                str(temp_output),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,  # 10 min timeout for videos
+        )
+
+        if result.returncode == 0 and temp_output.exists():
+            # Remove original and rename temp
+            input_path.unlink()
+            if output_path != input_path and output_path.exists():
+                output_path.unlink()
+            temp_output.rename(output_path)
+            return output_path
+        else:
+            # Clean up temp file on failure
+            if temp_output.exists():
+                temp_output.unlink()
+            return None
+    except subprocess.TimeoutExpired:
+        if temp_output.exists():
+            temp_output.unlink()
+        return None
+    except FileNotFoundError:
         return None
 
 
@@ -392,13 +447,14 @@ def download_attachments(
     attachments_dir: Path,
 ) -> dict[str, str]:
     """
-    Download all attachments with progress, converting images to WebP.
-    Returns a mapping of original filenames to WebP filenames.
+    Download all attachments with progress, converting images to WebP and videos to H.265.
+    Returns a mapping of original filenames to converted filenames.
     """
     success_count = 0
     fail_count = 0
     skip_count = 0
-    converted_count = 0
+    image_converted_count = 0
+    video_converted_count = 0
     filename_map: dict[str, str] = {}
 
     with Progress(
@@ -414,11 +470,19 @@ def download_attachments(
             msg_id = fmt_msg.get("id")
             output_filename = get_attachment_filename(fmt_msg)
             output_path = attachments_dir / output_filename
+            suffix_lower = output_path.suffix.lower()
 
-            # Check if already exists (either original or webp version)
+            # Check if already exists (converted versions)
             webp_path = output_path.with_suffix(".webp")
-            if webp_path.exists():
+            h265_path = output_path.with_suffix(".mp4")
+
+            if suffix_lower in IMAGE_EXTENSIONS and webp_path.exists():
                 filename_map[output_filename] = webp_path.name
+                skip_count += 1
+                progress.advance(task)
+                continue
+            if suffix_lower in VIDEO_EXTENSIONS and h265_path.exists() and h265_path != output_path:
+                filename_map[output_filename] = h265_path.name
                 skip_count += 1
                 progress.advance(task)
                 continue
@@ -427,7 +491,12 @@ def download_attachments(
                 new_path = convert_to_webp(output_path)
                 if new_path:
                     filename_map[output_filename] = new_path.name
-                    converted_count += 1
+                    image_converted_count += 1
+                else:
+                    new_path = compress_video(output_path)
+                    if new_path:
+                        filename_map[output_filename] = new_path.name
+                        video_converted_count += 1
                 skip_count += 1
                 progress.advance(task)
                 continue
@@ -441,14 +510,21 @@ def download_attachments(
                 new_path = convert_to_webp(output_path)
                 if new_path:
                     filename_map[output_filename] = new_path.name
-                    converted_count += 1
+                    image_converted_count += 1
+                else:
+                    # Compress video if it's a video
+                    new_path = compress_video(output_path)
+                    if new_path:
+                        filename_map[output_filename] = new_path.name
+                        video_converted_count += 1
             else:
                 fail_count += 1
 
             progress.advance(task)
 
     console.print(f"\n[green]Attachments: {success_count} downloaded, {skip_count} skipped, {fail_count} failed[/green]")
-    console.print(f"[green]Images converted to WebP: {converted_count}[/green]")
+    console.print(f"[green]Images converted to WebP: {image_converted_count}[/green]")
+    console.print(f"[green]Videos compressed to H.265: {video_converted_count}[/green]")
 
     return filename_map
 
