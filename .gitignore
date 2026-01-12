@@ -1,0 +1,36 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Environment and credentials
+.env
+.env.*
+*.pem
+*.key
+
+# Exported chat data
+keybase_export_*/
+btcresearch_*/
+*_export.json
+*_raw.json
+*_formatted.json
+*_readable.txt
+*_attachments/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+.claude
